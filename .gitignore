@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+
+# Virtualenvs
+venv/
+.venv/
+ENV/
+env/
+
+# OS
+.DS_Store
+
+# Env files
+.env
+
+# Editor directories
+.vscode/
+.idea/
+
+# Logs
+*.log
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Byte-compiled / distribution
+build/
+dist/
+*.egg-info/
+
+# Models / outputs
+fine_tuned_model/
