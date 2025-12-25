@@ -1,0 +1,10 @@
+fastapi
+uvicorn
+psycopg2-binary
+scikit-learn
+sentence-transformers
+pgvector
+boto3
+joblib
+requests
+rich
