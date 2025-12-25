@@ -1,16 +1,122 @@
 import os
-import psycopg2
 import csv
 import io
 import boto3
+import joblib
 from fastapi import FastAPI, HTTPException, UploadFile, File, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional, List
-from pgvector.psycopg2 import register_vector
-from AI_Project_Root.retrain_model import retrain
+
+from db_adapter import get_connection, ensure_tables
 
 app = FastAPI()
+
+# Ensure local DB schema exists (SQLite for local testing)
+ensure_tables()
+
+
+import difflib
+
+
+def vocabulary_lookup(raw_text: str):
+    """Look up direct vocabulary mappings. Returns (normalized, confidence, source) or (None, 0.0, None)."""
+    if not raw_text:
+        return None, 0.0, None
+    conn = get_connection()
+    cur = conn.cursor()
+    try:
+        s = raw_text.strip()
+        lower = s.lower()
+        # Exact (whole string) match
+        cur.execute("SELECT normalized, category FROM vocabulary WHERE token = ?", (lower,))
+        row = cur.fetchone()
+        if row and row[0]:
+            return row[0], 1.0, row[1] or 'vocab'
+        # Token-level mapping (replace tokens that have a mapping)
+        tokens = lower.split()
+        mapped = []
+        any_mapped = False
+        categories = set()
+        for t in tokens:
+            cur.execute("SELECT normalized, category FROM vocabulary WHERE token = ?", (t,))
+            r = cur.fetchone()
+            if r and r[0]:
+                mapped.append(r[0])
+                any_mapped = True
+                if r[1]:
+                    categories.add(r[1])
+            else:
+                mapped.append(t)
+        if any_mapped:
+            cat = ",".join(sorted(categories)) if categories else 'vocab'
+            return " ".join(mapped), 1.0, cat
+        return None, 0.0, None
+    finally:
+        cur.close()
+        conn.close()
+
+
+def taxonomy_search(raw_text: str, threshold: float = 0.7):
+    """Do a lightweight semantic search over taxonomy_reference using difflib.
+    Returns (taxonomy_label_or_path, confidence) or (None, 0.0).
+    """
+    if not raw_text:
+        return None, 0.0
+    conn = get_connection()
+    cur = conn.cursor()
+    try:
+        lower = raw_text.strip().lower()
+        cur.execute("SELECT taxonomy_path, label FROM taxonomy_reference")
+        candidates = cur.fetchall()
+        best = None
+        best_score = 0.0
+        for row in candidates:
+            path = (row[0] or '')
+            label = (row[1] or '')
+            # check label first
+            score_label = difflib.SequenceMatcher(None, lower, label.lower()).ratio() if label else 0.0
+            score_path = difflib.SequenceMatcher(None, lower, path.lower()).ratio() if path else 0.0
+            score = max(score_label, score_path)
+            if score > best_score:
+                best_score = score
+                best = label if score_label >= score_path else path
+        if best and best_score >= threshold:
+            # confidence tuned slightly below exact vocab
+            return best, round(best_score, 2)
+        return None, 0.0
+    finally:
+        cur.close()
+        conn.close()
+
+# Model holder
+normalization_model = None
+model_has_proba = False
+MODEL_PATH = os.getenv("NORMALIZATION_MODEL_PATH", "normalization_model.joblib")
+THRESHOLD_CONFIDENCE = float(os.getenv("NORMALIZATION_CONFIDENCE_THRESHOLD", "0.9"))
+
+
+def load_model():
+    global normalization_model, model_has_proba
+    if os.path.exists(MODEL_PATH):
+        try:
+            normalization_model = joblib.load(MODEL_PATH)
+            model_has_proba = hasattr(normalization_model, "predict_proba")
+            print(f"Loaded normalization model from {MODEL_PATH}. has_proba={model_has_proba}")
+            return True
+        except Exception as e:
+            print(f"Failed to load model: {e}")
+            normalization_model = None
+            model_has_proba = False
+            return False
+    else:
+        print("No normalization_model.joblib found; starting without a model")
+        normalization_model = None
+        model_has_proba = False
+        return False
+
+# Try load at startup
+load_model()
 
 # Enable CORS for frontend communication
 app.add_middleware(
@@ -21,25 +127,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Database Configuration
-# Defaults to 'db' (Docker service name), but can be overridden for local testing
-DB_NAME = os.getenv("POSTGRES_DB", "app_db")
-DB_USER = os.getenv("POSTGRES_USER", "user")
-DB_PASS = os.getenv("POSTGRES_PASSWORD", "password")
-DB_HOST = os.getenv("POSTGRES_HOST", "db")
-
-def get_db_connection():
-    """Establishes a connection to the PostgreSQL database."""
-    try:
-        return psycopg2.connect(
-            dbname=DB_NAME,
-            user=DB_USER,
-            password=DB_PASS,
-            host=DB_HOST
-        )
-    except Exception as e:
-        print(f"Database connection failed: {e}")
-        raise HTTPException(status_code=500, detail="Database connection failed")
 
 # Pydantic model for receiving feedback
 class Feedback(BaseModel):
@@ -53,68 +140,43 @@ def read_root():
 
 @app.get("/products-for-review")
 def get_products_for_review():
-    conn = get_db_connection()
-    register_vector(conn)
+    """Return products that need human review (SQLite implementation)."""
+    conn = get_connection()
     cur = conn.cursor()
-    # Fetch products that don't have feedback yet
-    cur.execute("""
-        SELECT p.id, p.text_content 
-        FROM products p
-        LEFT JOIN feedback f ON p.id = f.product_id
-        WHERE f.id IS NULL
-        LIMIT 10
-    """)
-    products = cur.fetchall()
-    
+    cur.execute("SELECT id, text_content, normalized_value, confidence FROM products WHERE needs_review = 1 ORDER BY created_at ASC LIMIT 50")
+    rows = cur.fetchall()
     results = []
-    for p_id, p_text in products:
-        # Get the vector for the current product
-        cur.execute("SELECT vector FROM embeddings WHERE product_id = %s", (p_id,))
-        embedding_row = cur.fetchone()
-        
-        confidence = 0.0
-        suggestion = None
-        
-        if embedding_row:
-            current_vector = embedding_row[0]
-            # Find the nearest approved product to calculate confidence
-            cur.execute("""
-                SELECT p.text_content, e.vector <=> %s AS distance
-                FROM embeddings e
-                JOIN feedback f ON e.product_id = f.product_id
-                JOIN products p ON e.product_id = p.id
-                WHERE f.is_approved = TRUE
-                ORDER BY distance ASC
-                LIMIT 1
-            """, (current_vector,))
-            neighbor = cur.fetchone()
-            
-            if neighbor:
-                neighbor_text, distance = neighbor
-                # Convert cosine distance to a confidence score (0 to 1)
-                confidence = max(0, 1 - distance)
-                suggestion = neighbor_text
-        
+    for r in rows:
         results.append({
-            "id": p_id, 
-            "text": p_text,
-            "confidence": round(confidence, 2),
-            "suggestion": suggestion
+            "id": r[0],
+            "text": r[1],
+            "normalized": r[2],
+            "confidence": round(r[3] or 0.0, 2)
         })
-
     cur.close()
     conn.close()
-    
     return results
+
+
+@app.get("/get_products_for_review")
+def get_products_for_review_alias():
+    """Alias endpoint matching original plan name."""
+    return get_products_for_review()
 
 @app.post("/submit-feedback")
 def submit_feedback(feedback: Feedback):
-    conn = get_db_connection()
+    """Store human feedback and clear needs_review flag."""
+    conn = get_connection()
     cur = conn.cursor()
-    cur.execute("""
-        INSERT INTO feedback (product_id, is_approved, correction)
-        VALUES (%s, %s, %s)
-    """, (feedback.product_id, feedback.is_approved, feedback.correction))
+    # Insert feedback
+    cur.execute("INSERT INTO feedback (product_id, is_approved, correction) VALUES (?, ?, ?)",
+                (feedback.product_id, int(feedback.is_approved), feedback.correction))
+    # Update product: set needs_review false and update normalized value if correction provided
+    if feedback.correction:
+        cur.execute("UPDATE products SET normalized_value = ?, needs_review = 0 WHERE id = ?",
+                    (feedback.correction, feedback.product_id))
+    else:
+        cur.execute("UPDATE products SET needs_review = 0 WHERE id = ?", (feedback.product_id,))
     conn.commit()
     cur.close()
     conn.close()
@@ -122,10 +184,10 @@ def submit_feedback(feedback: Feedback):
 
 @app.post("/upload-csv")
 async def upload_csv(file: UploadFile = File(...)):
-    # Read the file content
+    """Upload CSV, run initial normalization (joblib) if available, and mark items for review as needed."""
     content = await file.read()
     decoded = content.decode('utf-8')
-    
+
     # Archive to Cloudflare R2 (if configured)
     if os.getenv("R2_BUCKET_NAME"):
         try:
@@ -141,20 +203,66 @@ async def upload_csv(file: UploadFile = File(...)):
             print(f"Failed to upload to R2: {e}")
 
     csv_reader = csv.reader(io.StringIO(decoded))
-    
-    conn = get_db_connection()
+    conn = get_connection()
     cur = conn.cursor()
-    
-    # Skip the header row
+
+    # Skip header
     next(csv_reader, None)
-    
+
     count = 0
     for row in csv_reader:
         if row:
-            # Assuming the first column contains the product text
-            cur.execute("INSERT INTO products (text_content) VALUES (%s)", (row[0],))
+            raw = row[0]
+            normalized = None
+            confidence = 0.0
+            needs_review = 1
+
+            # WATERFALL: 1) vocabulary, 2) taxonomy semantic search, 3) ML model
+            # 1) vocabulary
+            try:
+                voc_norm, voc_conf, voc_cat = vocabulary_lookup(raw)
+                if voc_norm:
+                    normalized = voc_norm
+                    confidence = voc_conf
+                    needs_review = 0
+                else:
+                    # 2) taxonomy semantic search
+                    tax_norm, tax_score = taxonomy_search(raw)
+                    if tax_norm:
+                        normalized = tax_norm
+                        # map tax_score (0-1) to confidence with a boost
+                        confidence = round(max(tax_score, 0.85), 2)
+                        if confidence >= THRESHOLD_CONFIDENCE:
+                            needs_review = 0
+                    else:
+                        # 3) fallback to ML model
+                        if normalization_model is not None:
+                            try:
+                                normalized = normalization_model.predict([raw])[0]
+                                # If model supports predict_proba, compute confidence
+                                if model_has_proba:
+                                    probs = normalization_model.predict_proba([raw])[0]
+                                    confidence = float(max(probs))
+                                else:
+                                    confidence = 0.0
+                                # Auto-approve if confidence meets threshold
+                                if confidence >= THRESHOLD_CONFIDENCE:
+                                    needs_review = 0
+                            except Exception as e:
+                                print(f"Model prediction failed for '{raw}': {e}")
+                                normalized = None
+                                confidence = 0.0
+                                needs_review = 1
+            except Exception as e:
+                print(f"Waterfall prediction failed for '{raw}': {e}")
+                normalized = None
+                confidence = 0.0
+                needs_review = 1
+
+            cur.execute("INSERT INTO products (text_content, normalized_value, needs_review, confidence) VALUES (?, ?, ?, ?)",
+                        (raw, normalized, needs_review, confidence))
             count += 1
-            
+
     conn.commit()
     cur.close()
     conn.close()
@@ -162,5 +270,25 @@ async def upload_csv(file: UploadFile = File(...)):
 
 @app.post("/trigger-retrain")
 async def trigger_retrain(background_tasks: BackgroundTasks):
-    background_tasks.add_task(retrain)
+    """Trigger a retrain in the background. Chooses SQLite offline retrain when DB_URL indicates sqlite."""
+    db_url = os.getenv("DB_URL", "sqlite")
+    if "sqlite" in db_url:
+        from AI_Project_Root.retrain_model_sqlite import retrain as sqlite_retrain
+        background_tasks.add_task(sqlite_retrain)
+    else:
+        try:
+            from AI_Project_Root.retrain_model import retrain as pg_retrain
+            background_tasks.add_task(pg_retrain)
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Retrain import failed: {e}")
     return {"message": "Retraining started in background"}
+
+
+@app.post("/reload_model")
+def reload_model():
+    """Reload the normalization joblib model at runtime."""
+    ok = load_model()
+    if ok:
+        return {"status": "reloaded"}
+    else:
+        raise HTTPException(status_code=500, detail="Failed to load model")

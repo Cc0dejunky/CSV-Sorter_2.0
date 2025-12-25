@@ -5,3 +5,6 @@ scikit-learn
 sentence-transformers
 pgvector
 boto3
+joblib
+requests
+rich

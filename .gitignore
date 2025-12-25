@@ -34,3 +34,15 @@ dist/
 
 # Models / outputs
 fine_tuned_model/
+
+# Local DB / artifacts
+dev.db
+/workspaces/persistent/dev.db
+normalization_model.joblib
+/workspaces/persistent/normalization_model.joblib
+diagnostics.html
+/workspaces/persistent/diagnostics.html
+
+# backups
+*.tar.gz
+*.zip
