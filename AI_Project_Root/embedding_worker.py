@@ -1,45 +1,20 @@
-import os
 import time
-import psycopg2
+import sqlite3
+import json
 from sentence_transformers import SentenceTransformer
-
-# Database Configuration
-DB_NAME = os.getenv("POSTGRES_DB", "app_db")
-DB_USER = os.getenv("POSTGRES_USER", "user")
-DB_PASS = os.getenv("POSTGRES_PASSWORD", "password")
-DB_HOST = os.getenv("POSTGRES_HOST", "db")
-
-def get_db_connection():
-    """Establishes a connection to the PostgreSQL database."""
-    try:
-        return psycopg2.connect(
-            dbname=DB_NAME,
-            user=DB_USER,
-            password=DB_PASS,
-            host=DB_HOST
-        )
-    except Exception as e:
-        print(f"Connection failed: {e}")
-        return None
+from db_adapter import get_connection
 
 def run_worker():
-    """Main loop that processes new products and generates embeddings."""
-    print("Initializing AI Model (SentenceTransformer)...")
-    # This model converts text into a 384-dimensional vector
+    print("Initializing AI Model (SQLite Version)...")
     model = SentenceTransformer('all-MiniLM-L6-v2')
     print("Model loaded successfully.")
 
     while True:
-        conn = get_db_connection()
-        if not conn:
-            time.sleep(5)
-            continue
-
         try:
+            conn = get_connection()
             cur = conn.cursor()
             
-            # 1. READ: Find products that don't have an embedding yet
-            # This query looks for products where the join to 'embeddings' is NULL
+            # 1. Find products without embeddings
             cur.execute("""
                 SELECT p.id, p.text_content 
                 FROM products p
@@ -50,38 +25,26 @@ def run_worker():
             rows = cur.fetchall()
 
             if not rows:
-                # No new data, wait before checking again
-                print("No new products found. Sleeping...")
-                time.sleep(5)
+                print("No new products to process. Sleeping...")
+                time.sleep(10)
             else:
-                print(f"Processing {len(rows)} new products...")
-                
+                print(f"AI is processing {len(rows)} products...")
                 for product_id, text_content in rows:
-                    # 2. PROCESS: The AI 'reads' the text and creates a vector
                     if text_content:
-                        embedding_vector = model.encode(text_content).tolist()
-                        
-                        # 3. WRITE: Save the vector so we can 'check' it later
-                        cur.execute("""
-                            INSERT INTO embeddings (product_id, vector)
-                            VALUES (%s, %s)
-                        """, (product_id, embedding_vector))
-                    else:
-                        print(f"Skipping product {product_id} (empty text)")
-
+                        # Create the AI vector
+                        vector = model.encode(text_content).tolist()
+                        # Save to SQLite (using JSON string for the vector)
+                        cur.execute("INSERT INTO embeddings (product_id, vector_json) VALUES (?, ?)", 
+                                   (product_id, json.dumps(vector)))
+                
                 conn.commit()
-                print("Batch processed and saved.")
+                print("Batch completed.")
 
             cur.close()
             conn.close()
-
         except Exception as e:
-            print(f"Error during processing: {e}")
-            if conn:
-                conn.close()
+            print(f"Error: {e}")
             time.sleep(5)
 
 if __name__ == "__main__":
-    # Add a small delay to ensure DB is ready on startup
-    time.sleep(10)
     run_worker()

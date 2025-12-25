@@ -1,68 +1,59 @@
-"""Seed the vocabulary table with common abbreviations and allow loading from CSV.
+"""Seed a small vocabulary table with common abbreviations and normalizations.
 
-CSV format: token,normalized
-Example row: nvy,Navy
+Usage:
+    python scripts/seed_vocabulary.py
+
+This inserts tokens like: 'wmns' -> "Women's", 'nvy' -> 'Navy', 'oz' -> 'Ounce'.
 """
-import argparse
-import csv
 from db_adapter import get_connection, ensure_tables
 
-# Default small vocabulary mapping
-DEFAULT_VOCAB = [
-    ("wmns", "Women's"),
-    ("womens", "Women's"),
-    ("nvy", "Navy"),
-    ("nv", "Navy"),
-    ("rd", "Red"),
-    ("blk", "Black"),
-    ("oz", "Ounce"),
-    ("l", "Liter"),
-    ("ml", "Milliliter"),
-    ("sml", "Small"),
-    ("med", "Medium"),
-    ("lg", "Large")
+DEFAULT_PAIRS = [
+    ("sm", "Small", "Size"), ("sml", "Small", "Size"),
+    ("md", "Medium", "Size"), ("med", "Medium", "Size"),
+    ("lg", "Large", "Size"), ("lrg", "Large", "Size"),
+    ("xl", "Extra Large", "Size"), ("xxl", "2XL", "Size"),
+    ("os", "One Size", "Size"), ("osfa", "One Size Fits All", "Size"),
+
+    ("nvy", "Navy", "Color"), ("blk", "Black", "Color"),
+    ("wht", "White", "Color"), ("grn", "Green", "Color"),
+    ("gry", "Gray", "Color"), ("slvr", "Silver", "Color"),
+    ("multi", "Multicolor", "Color"),
+
+    ("wmns", "Women's", "Gender"), ("mens", "Men's", "Gender"),
+    ("s/s", "Short Sleeve", "Feature"), ("l/s", "Long Sleeve", "Feature"),
+    ("ctn", "Cotton", "Material"), ("poly", "Polyester", "Material"),
+    ("btn", "Button", "Feature"), ("v-neck", "V-Neck", "Feature"),
+
+    ("oz", "Ounce", "Unit"), ("fl oz", "Fluid Ounce", "Unit"),
+    ("ml", "Milliliter", "Unit"), ("lb", "Pound", "Unit"),
+    ("kg", "Kilogram", "Unit"), ("ea", "Each", "Quantity"),
+    ("pk", "Pack", "Quantity"), ("pkg", "Package", "Quantity"),
+
+    # additional small mappings kept (lower risk)
+    ("womens", "Women's", "Gender"), ("rd", "Red", "Color"),
+    ("sneaks", "Sneakers", "Product"), ("l", "Large", "Size"), ("m", "Medium", "Size"), ("s", "Small", "Size")
 ]
 
 
-def seed_from_iter(pairs, source=None):
+def seed(pairs=DEFAULT_PAIRS):
     ensure_tables()
     conn = get_connection()
     cur = conn.cursor()
     inserted = 0
-    for token, normalized in pairs:
-        token_norm = token.strip().lower()
+    for token, norm, category in pairs:
         try:
-            cur.execute("INSERT OR REPLACE INTO vocabulary (token, normalized, source) VALUES (?, ?, ?)", (token_norm, normalized.strip(), source))
+            cur.execute(
+                "INSERT OR IGNORE INTO vocabulary (token, normalized, source, category) VALUES (?, ?, ?, ?)",
+                (token.lower(), norm, 'seed', category)
+            )
             inserted += 1
-        except Exception:
-            continue
+        except Exception as e:
+            print(f"Failed insert {token}: {e}")
     conn.commit()
     cur.close()
     conn.close()
-    print(f"Inserted/updated {inserted} vocabulary rows")
-    return inserted
-
-
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--file", help="CSV file with token,normalized columns")
-    args = parser.parse_args()
-
-    if args.file:
-        pairs = []
-        with open(args.file, "r", encoding="utf-8") as fh:
-            reader = csv.reader(fh)
-            for row in reader:
-                if not row:
-                    continue
-                token = row[0]
-                norm = row[1] if len(row) > 1 else ''
-                pairs.append((token, norm))
-        seed_from_iter(pairs, source=args.file)
-    else:
-        print("No file given; inserting default vocabulary list")
-        seed_from_iter(DEFAULT_VOCAB, source="default")
+    print(f"Seeded {inserted} vocabulary items")
 
 
 if __name__ == "__main__":
-    main()
+    seed()
