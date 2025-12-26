@@ -1,115 +1,165 @@
-import React, { useState, useEffect, useRef } from 'react';
+import { useState, useEffect } from 'react'
+import './App.css'
 
-// BRAND COLORS: Neon Accents
-const NEON = { pink: '#ff00ff', aqua: '#00ffff', teal: '#00ffcc', purple: '#bc13fe', darkBlue: '#1b03a3' };
+// Use Vite env variable for codespace URL or fall back to localhost:8000
+const BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
-// FIXED: Now points to the BACKEND port (8000)
-const BASE_URL = 'https://expert-rotary-phone-9756jw66ww9v247r-8000.app.github.dev';
+function App() {
+  const [products, setProducts] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState(null)
 
-export default function App() {
-  const [products, setProducts] = useState([]);
-  const [currentIndex, setCurrentIndex] = useState(0);
-  const [correction, setCorrection] = useState('');
-  const [loading, setLoading] = useState(true);
-  const inputRef = useRef(null);
+  useEffect(() => { fetchProducts() }, [])
 
-  useEffect(() => {
-    fetch(`${BASE_URL}/products`)
-      .then(res => res.json())
-      .then(data => {
-        // Handle both "all" and "pending" results
-        const items = Array.isArray(data) ? data : [];
-        setProducts(items);
-        setLoading(false);
-      })
-      .catch(err => {
-        console.error("Backend unreachable on port 8000:", err);
-        setLoading(false);
-      });
-  }, []);
+  const normalizeProduct = (p) => ({
+    id: p.id,
+    text_content: p.text_content || p.text || p.normalized || '',
+    category: p.category || p.taxonomy || p.category || null,
+    type: p.type || p.product_type || null,
+    price: p.variant_price || p.price || p.price || null,
+    compare_price: p.variant_compare_at_price || p.compare_price || p.compare_price || null,
+    taxable: typeof p.taxable === 'boolean' ? p.taxable : (p.taxable === 1 ? true : (p.taxable === 0 ? false : false)),
+    status: p.status || 'Draft',
+    variant_image: p.variant_image || p.image || p.image_src || null,
+    ...p
+  })
 
-  useEffect(() => {
-    if (inputRef.current) inputRef.current.focus();
-  }, [currentIndex, loading]);
-
-  const handleKeyDown = (e) => {
-    if (e.key === 'Enter') {
-      const isApproved = correction.trim() === '';
-      handleFeedback(isApproved);
-    }
-  };
-
-  const handleFeedback = async (isApproved) => {
-    if (products.length === 0) return;
-    const product = products[currentIndex];
-    
+  const fetchProducts = async () => {
+    setLoading(true)
+    setError(null)
     try {
+      const res = await fetch(`${BASE_URL}/products`)
+      if (!res.ok) throw new Error(`${res.status} ${res.statusText}`)
+      const data = await res.json()
+      const mapped = data.map(normalizeProduct)
+      setProducts(mapped)
+    } catch (err) {
+      setError(`Cannot reach backend at ${BASE_URL}. Verify the Codespace port 8000 forwarding and set VITE_API_URL if needed.`)
+      console.error(err)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <div className="gallery-container">
+      <header className="sticky-header">
+        <h1>PRODUCT COMMAND CENTER</h1>
+        {error && <div className="connection-alert">{error}</div>}
+      </header>
+
+      <div className="product-grid">
+        {products.map(p => (
+          <ProductCard key={p.id} product={p} onSaved={fetchProducts} />
+        ))}
+      </div>
+      
+      <button className="massive-submit-btn">PUBLISH ALL CHANGES</button>
+    </div>
+  )
+}
+
+function ProductCard({ product, onSaved }) {
+  const [editing, setEditing] = useState(false)
+  const [title, setTitle] = useState(product.text_content || '')
+  const [category, setCategory] = useState(product.category || '')
+  const [typeSel, setTypeSel] = useState(product.type || '')
+  const [price, setPrice] = useState(product.price || '')
+  const [comparePrice, setComparePrice] = useState(product.compare_price || '')
+  const [taxable, setTaxable] = useState(Boolean(product.taxable))
+  const [status, setStatus] = useState(product.status || 'Draft')
+  const [imagePreview, setImagePreview] = useState(product.variant_image || '')
+  const [submitting, setSubmitting] = useState(false)
+
+  useEffect(() => {
+    setTitle(product.text_content || '')
+    setCategory(product.category || '')
+    setTypeSel(product.type || '')
+    setPrice(product.price || '')
+    setComparePrice(product.compare_price || '')
+    setTaxable(Boolean(product.taxable))
+    setStatus(product.status || 'Draft')
+    setImagePreview(product.variant_image || '')
+  }, [product])
+
+  const handleSave = async () => {
+    setSubmitting(true)
+    try {
+      const correction = JSON.stringify({
+        variant_image: imagePreview,
+        variant_price: price,
+        variant_compare_at_price: comparePrice,
+        category,
+        type: typeSel,
+        taxable,
+        status,
+        title
+      })
+
       await fetch(`${BASE_URL}/submit-feedback`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          product_id: product.id,
-          is_approved: isApproved,
-          correction: isApproved ? product.text_content : correction
-        }),
-      });
+        body: JSON.stringify({ product_id: product.id, is_approved: false, correction })
+      })
 
-      if (currentIndex < products.length - 1) {
-        setCurrentIndex(prev => prev + 1);
-        setCorrection('');
-      } else {
-        alert("🎯 Batch Complete!");
-        setLoading(true);
-        window.location.reload(); 
-      }
-    } catch (error) { console.error("Submit error:", error); }
-  };
+      setEditing(false)
+      if (onSaved) onSaved()
+    } catch (e) {
+      console.error('Save failed', e)
+    } finally {
+      setSubmitting(false)
+    }
+  }
 
-  if (loading) return <div style={styles.loader}>INITIALIZING NEON...</div>;
-  if (products.length === 0) return <div style={styles.loader}>NO PRODUCTS FOUND - CHECK DEV.DB</div>;
-
-  const current = products[currentIndex];
+  const handleKeyDown = (e) => {
+    if (e.key === 'Enter') {
+      handleSave()
+    }
+  }
 
   return (
-    <div style={styles.container}>
-      <div style={styles.card}>
-        <div style={styles.header}>
-          <h2 style={styles.h2}>ITEM {currentIndex + 1} / {products.length}</h2>
-        </div>
+    <div className={`manager-card ${editing ? 'editing' : ''}`}>
+      <div className="card-header">
+        <label className="switch">
+          <input type="checkbox" checked={editing} onChange={() => setEditing(s => !s)} />
+          <span className="slider"></span>
+        </label>
+        <h6 className="card-id">ID: {product.id}</h6>
+      </div>
 
-        <div style={styles.contentArea}>
-          <h5 style={styles.h5}>RAW DATA INPUT</h5>
-          <div style={styles.rawText}>{current.text_content || current.text}</div>
-        </div>
+      <div className="card-image-container">
+        <img src={imagePreview || 'https://via.placeholder.com/200'} alt="Product" className="product-img" />
+      </div>
 
-        <div style={styles.inputSection}>
-          <input
-            ref={inputRef}
-            type="text"
-            value={correction}
-            onChange={(e) => setCorrection(e.target.value)}
-            onKeyDown={handleKeyDown}
-            placeholder="Type revision & hit Enter..."
-            style={styles.input}
-          />
-          <div style={styles.hint}>
-            <strong>ENTER</strong> to Submit | <strong>EMPTY + ENTER</strong> to Approve
+      {!editing ? (
+        <div className="info-display">
+          <h2>{title}</h2>
+          <div className="raw-text-box mini"><strong>Category:</strong> {category || 'No Category'}</div>
+          <div className="raw-text-box mini"><strong>Type:</strong> {typeSel || 'No Type'}</div>
+          <div className="raw-text-box mini"><strong>Price:</strong> ${price || '0.00'} &nbsp; <strong>Compare:</strong> ${comparePrice || '0.00'}</div>
+          <div className="raw-text-box mini"><strong>Taxable?</strong> {taxable ? 'True' : 'False'}</div>
+          <div className="status-indicator"><strong>Status:</strong> {status}</div>
+        </div>
+      ) : (
+        <div className="edit-form" onKeyDown={handleKeyDown}>
+          <input autoFocus value={title} onChange={(e) => setTitle(e.target.value)} className="neon-input-small" />
+          <input value={category} onChange={(e) => setCategory(e.target.value)} className="neon-input-small" placeholder="Category" />
+          <input value={typeSel} onChange={(e) => setTypeSel(e.target.value)} className="neon-input-small" placeholder="Type" />
+          <input value={price} onChange={(e) => setPrice(e.target.value)} className="neon-input-small" placeholder="Price" />
+          <input value={comparePrice} onChange={(e) => setComparePrice(e.target.value)} className="neon-input-small" placeholder="Compare Price" />
+          <label><input type="checkbox" checked={taxable} onChange={(e) => setTaxable(e.target.checked)} /> Taxable?</label>
+          <select value={status} onChange={(e) => setStatus(e.target.value)} className="neon-select">
+            <option>Active</option>
+            <option>Draft</option>
+          </select>
+          <div className="card-actions">
+            <button onClick={handleSave} disabled={submitting}>Save</button>
+            <button onClick={() => setEditing(false)} disabled={submitting}>Cancel</button>
           </div>
         </div>
-      </div>
+      )}
     </div>
-  );
+  )
 }
 
-const styles = {
-  container: { minHeight: '100vh', backgroundColor: '#fdfdfd', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'sans-serif' },
-  card: { width: '90%', maxWidth: '600px', backgroundColor: 'white', borderRadius: '16px', padding: '40px', boxShadow: '0 20px 40px rgba(0,0,0,0.1)', border: '4px solid transparent', borderImageSource: `linear-gradient(to right, ${NEON.pink}, ${NEON.aqua})`, borderImageSlice: 1 },
-  header: { marginBottom: '30px' },
-  h2: { color: 'white', textShadow: `2px 2px 0px ${NEON.purple}, 4px 4px 10px ${NEON.purple}` },
-  h5: { color: 'white', textShadow: `1px 1px 0px ${NEON.teal}, 2px 2px 5px ${NEON.teal}`, letterSpacing: '1px' },
-  contentArea: { marginBottom: '30px' },
-  rawText: { fontSize: '20px', color: '#1e293b', backgroundColor: '#f8fafc', padding: '20px', borderRadius: '8px', border: '1px solid #e2e8f0' },
-  input: { width: '100%', border: `2px solid ${NEON.aqua}`, borderRadius: '8px', padding: '15px', fontSize: '18px', outline: 'none' },
-  hint: { marginTop: '15px', textAlign: 'center', fontSize: '12px', color: '#64748b' },
-  loader: { height: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', color: NEON.pink, fontWeight: 'bold', fontSize: '24px' }
-};
+export default App
