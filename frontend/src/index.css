@@ -24,15 +24,49 @@ a:hover {
 
 body {
   margin: 0;
-  display: flex;
-  place-items: center;
-  min-width: 320px;
+  padding: 0;
+  /* Tech-White Background */
+  background-color: #fdfdfd; 
+  /* Alignment for your Cards */
+  display: block; 
   min-height: 100vh;
+  font-family: 'Inter', system-ui, sans-serif;
 }
 
-h1 {
-  font-size: 3.2em;
-  line-height: 1.1;
+/* H1 & H2: Dark Purple Neon with 3-layer text shadow */
+h1, h2 {
+  color: white;
+  background-color: #120458; /* Dark base to help the glow */
+  padding: 20px;
+  text-align: center;
+  text-shadow: 
+    0 0 5px #bc13fe,
+    0 0 10px #bc13fe,
+    0 0 20px #bc13fe;
+}
+
+/* H5 & H6: Neon Teal */
+h5, h6 {
+  color: #00ffff;
+  text-shadow: 0 0 5px #00ffff;
+  text-transform: uppercase;
+  letter-spacing: 2px;
+}
+
+/* Your Card Component */
+.card {
+  background: white;
+  margin: 40px auto;
+  max-width: 800px;
+  padding: 30px;
+  /* Neon Pink/Neon Aqua Linear Gradient Border */
+  border: 4px solid;
+  border-image: linear-gradient(to right, #ff00ff, #00ffff) 1;
+  /* Your requested Box Shadow Variances */
+  box-shadow: 
+    10px 10px 0px rgba(0, 255, 255, 0.1), /* Neon Aqua shadow */
+    20px 20px 0px rgba(188, 19, 254, 0.05), /* Neon Purple shadow */
+    0px 4px 20px rgba(0,0,0,0.08); /* Soft depth */
 }
 
 button {
@@ -52,6 +86,19 @@ button:hover {
 button:focus,
 button:focus-visible {
   outline: 4px auto -webkit-focus-ring-color;
+}
+
+input {
+  width: 100%;
+  padding: 15px;
+  border: 2px solid #bc13fe; /* Neon Purple */
+  font-size: 1.2rem;
+  outline: none;
+}
+
+input:focus {
+  border-color: #00ffff; /* Switch to Neon Teal when typing */
+  box-shadow: 0 0 10px #00ffff;
 }
 
 @media (prefers-color-scheme: light) {

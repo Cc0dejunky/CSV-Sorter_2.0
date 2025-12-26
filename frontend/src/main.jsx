@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 import './App.css'
 
 // IMPORTANT: Double-check that this ID matches your browser URL bar!
-const BASE_URL = 'https://expert-rotary-phone-9756jw66ww9v247r-8000.app.github.dev'
+const BASE_URL = 'https://expert-rotary-phone-9756jw66ww9v247r-8000.app.github.dev/'
 
 function App() {
   const [products, setProducts] = useState([])
