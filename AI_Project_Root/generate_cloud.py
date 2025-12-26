@@ -109,18 +109,43 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--out', default='diagnostics.html')
     parser.add_argument('--limit', type=int, default=200)
+    parser.add_argument('--open', dest='do_open', action='store_true', default=True,
+                        help='Attempt to open generated HTML in browser')
+    parser.add_argument('--no-open', dest='do_open', action='store_false',
+                        help='Do not open generated HTML in browser')
+    parser.add_argument('--open-n', type=int, default=1, help='Number of windows/tabs to open (max 10)')
+    parser.add_argument('--new-window', action='store_true', help='Open in new browser window(s) instead of new tab(s)')
     args = parser.parse_args()
 
     list_json, colors_json = collect_stats(limit=args.limit)
     write_html(args.out, list_json, colors_json)
 
-    # Attempt to open
+    # Attempt to open (honor flags)
+    if not args.do_open:
+        print(f"Skipped opening {args.out} in browser (--no-open)")
+        return
+
     file_url = 'file://' + os.path.abspath(args.out)
-    try:
-        webbrowser.open_new_tab(file_url)
-        print(f"Opened {file_url} in the browser (best-effort)")
-    except Exception as e:
-        print(f"Could not open browser automatically: {e}")
+    opened = 0
+    max_open = max(0, min(10, args.open_n))
+    for i in range(max_open):
+        try:
+            if args.new_window:
+                # new=1 requests a new browser window
+                success = webbrowser.open(file_url, new=1)
+            else:
+                success = webbrowser.open_new_tab(file_url)
+            if success:
+                opened += 1
+            print(f"Attempted to open {file_url} ({'window' if args.new_window else 'tab'})")
+        except Exception as e:
+            print(f"Could not open browser automatically on attempt {i+1}: {e}")
+            break
+
+    if opened:
+        print(f"Opened {opened} instance(s) of {file_url} in your browser (best-effort)")
+    else:
+        print("No browser windows/tabs were opened automatically; you can open the file manually.")
 
 
 if __name__ == '__main__':

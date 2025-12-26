@@ -163,6 +163,34 @@ def get_products_for_review_alias():
     """Alias endpoint matching original plan name."""
     return get_products_for_review()
 
+
+@app.get("/products")
+def get_products(all: bool = False):
+    """Return products from the DB.
+    If `all` is false (default) return items where `needs_review = 1` for human review.
+    If `all` is true, return all products.
+    This will return every column present in the `products` table so the frontend can consume Shopify-like fields when present.
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+    # Get column names so we can return complete objects even if schema evolves
+    cur.execute("PRAGMA table_info(products)")
+    cols = [r[1] for r in cur.fetchall()]
+
+    if all:
+        cur.execute("SELECT * FROM products ORDER BY created_at DESC")
+    else:
+        cur.execute("SELECT * FROM products WHERE needs_review = 1 ORDER BY created_at ASC")
+
+    rows = cur.fetchall()
+    results = []
+    for r in rows:
+        results.append({cols[i]: r[i] for i in range(len(cols))})
+
+    cur.close()
+    conn.close()
+    return results
+
 @app.post("/submit-feedback")
 def submit_feedback(feedback: Feedback):
     """Store human feedback and clear needs_review flag."""
