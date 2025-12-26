@@ -12,7 +12,7 @@ Features:
 
 This TUI uses only `requests` and `rich` so it runs on Windows/WSL easily.
 """
-
+import os 
 import argparse
 import sys
 import requests
