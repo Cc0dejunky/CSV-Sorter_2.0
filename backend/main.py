@@ -1,19 +1,13 @@
-# ANCHOR: Product Command Center Brain
-# LOCATION: /backend/main.py
-# UX_RULE: Must process /submit-feedback instantly for 160wpm typing.
-# BRAND: Provides data for Neon Pink/Aqua UI.
-
 import os
-from fastapi import FastAPI, BackgroundTasks
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, List
 from db_adapter import get_connection, ensure_tables
 
 app = FastAPI()
 ensure_tables()
 
-# THE HANDSHAKE: Unlocks Port 8000
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -28,35 +22,30 @@ class Feedback(BaseModel):
 
 @app.get("/products")
 def get_products():
-    """Gallery View: Pulls all products for the Tech-White dashboard."""
     conn = get_connection()
     cur = conn.cursor()
-    # Pulling every column to ensure prices/images show up
-    cur.execute("SELECT * FROM products ORDER BY created_at DESC")
+    # Fetching pending items for the review queue
+    cur.execute("SELECT id, text_content, status FROM products WHERE status = 'pending' LIMIT 50")
     rows = cur.fetchall()
-    
-    colnames = [d[0] for d in cur.description]
-    results = []
-    for r in rows:
-        d = dict(zip(colnames, r))
-        # Ensure image and price fields are named correctly for the frontend
-        results.append({
-            "id": d.get("id"),
-            "text_content": d.get("text_content"),
-            "price": d.get("Variant Price") or d.get("price") or "0.00",
-            "variant_image": d.get("Variant Image") or d.get("variant_image") or ""
-        })
+    results = [{"id": r["id"], "text_content": r["text_content"], "status": r["status"]} for r in rows]
     cur.close()
     conn.close()
     return results
 
 @app.post("/submit-feedback")
 def submit_feedback(fb: Feedback):
-    """160wpm Trigger: Updates SQLite immediately on Enter key."""
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("UPDATE products SET text_content = ?, needs_review = 0 WHERE id = ?", 
-                (fb.correction, fb.product_id))
+    # Update the product status and save the correction
+    cur.execute(
+        "UPDATE products SET status = ?, normalized_value = ? WHERE id = ?",
+        ('approved' if fb.is_approved else 'corrected', fb.correction, fb.product_id)
+    )
+    # Also record in the feedback table for the AI to learn later
+    cur.execute(
+        "INSERT INTO feedback (product_id, is_approved, correction) VALUES (?, ?, ?)",
+        (fb.product_id, 1 if fb.is_approved else 0, fb.correction)
+    )
     conn.commit()
     cur.close()
     conn.close()
